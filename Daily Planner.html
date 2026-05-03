@@ -1926,7 +1926,7 @@ function renderBlock(block, layer) {
   el.style.borderColor = hexToRgba(color, 0.6);
   el.style.zIndex = 5;
   // Expose bg/border as CSS vars so overflow columns can match
-  el.style.setProperty('--block-bg', hexToRgba(color, 0.92));
+  el.style.setProperty('--block-bg', hexToRgba(color, 0.35));
   el.style.setProperty('--block-border', hexToRgba(color, 0.6));
 
   // Accent bar
@@ -2002,15 +2002,16 @@ function renderBlock(block, layer) {
       colEl.className = 'block-tasks';
       if (c > 0) {
         // Position additional columns absolutely to the right of the block
+        // Use same tinted background as the block itself so they blend seamlessly
         colEl.style.cssText = `
           position: absolute;
           top: 0;
           left: ${c * 160}px;
           width: 152px;
-          background: transparent;
-          border: none;
-          padding: 0;
-          box-shadow: none;
+          background: var(--block-bg);
+          border: 1.5px solid var(--block-border);
+          border-radius: var(--radius-md);
+          padding: 4px 8px;
           z-index: ${9 + c};
           pointer-events: all;
         `;
