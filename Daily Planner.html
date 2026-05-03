@@ -192,7 +192,7 @@ a { color: inherit; text-decoration: none; }
 #grid-container {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: visible;
   padding: 20px 0 60px 0;
   position: relative;
 }
@@ -248,6 +248,7 @@ a { color: inherit; text-decoration: none; }
   top: 0;
   bottom: 0;
   pointer-events: none;
+  overflow: visible;
 }
 .time-block {
   position: absolute;
@@ -258,7 +259,7 @@ a { color: inherit; text-decoration: none; }
   cursor: pointer;
   pointer-events: all;
   box-shadow: var(--shadow-sm);
-  overflow: hidden;
+  overflow: visible;
   transition: box-shadow 0.15s, transform 0.05s;
   user-select: none;
   display: flex;
@@ -288,19 +289,9 @@ a { color: inherit; text-decoration: none; }
 .block-content {
   margin-left: 8px;
   flex: 1;
-  overflow: hidden;
+  overflow: visible;
   min-height: 0;
   position: relative;
-}
-/* Fade-out at bottom when content is clipped */
-.block-content::after {
-  content: '';
-  position: absolute;
-  bottom: 0; left: 0; right: 0;
-  height: 12px;
-  background: linear-gradient(to bottom, transparent, var(--block-bg, rgba(255,255,255,0.01)));
-  pointer-events: none;
-  border-radius: 0 0 var(--radius-md) var(--radius-md);
 }
 .block-title {
   font-size: 0.82rem;
@@ -332,7 +323,7 @@ a { color: inherit; text-decoration: none; }
   flex-direction: column;
   gap: 2px;
   flex: 1;
-  overflow: hidden;
+  overflow: visible;
 }
 .block-task-item {
   display: flex;
@@ -1934,6 +1925,9 @@ function renderBlock(block, layer) {
   el.style.background = hexToRgba(color, 0.35);
   el.style.borderColor = hexToRgba(color, 0.6);
   el.style.zIndex = 5;
+  // Expose bg/border as CSS vars so overflow columns can match
+  el.style.setProperty('--block-bg', hexToRgba(color, 0.92));
+  el.style.setProperty('--block-border', hexToRgba(color, 0.6));
 
   // Accent bar
   const bar = document.createElement('div');
@@ -1984,52 +1978,76 @@ function renderBlock(block, layer) {
 
   // Tasks
   if (block.tasks && block.tasks.length > 0) {
-    const tasksEl = document.createElement('div');
-    tasksEl.className = 'block-tasks';
-
-    // Calculate how many tasks fit based on block height
-    // Each task row is ~18px; reserve ~32px for title+meta, ~16px for progress
+    // Calculate how many tasks fit in one column based on block height
     const taskRowH = 18;
     const reservedH = 36 + (block.tasks.length > 1 ? 20 : 0);
     const availableH = height - reservedH;
-    const maxVisible = Math.max(1, Math.min(5, Math.floor(availableH / taskRowH)));
-    const visibleTasks = block.tasks.slice(0, maxVisible);
+    const perCol = Math.max(1, Math.floor(availableH / taskRowH));
 
-    visibleTasks.forEach(task => {
-      const item = document.createElement('div');
-      item.className = 'block-task-item' + (task.completed ? ' completed' : '');
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = task.completed;
-      cb.addEventListener('change', e => {
-        e.stopPropagation();
-        toggleTaskCompletion(block, task.id);
-      });
-      const txt = document.createElement('span');
-      txt.className = 'block-task-text';
-      txt.textContent = task.text;
-      item.appendChild(cb);
-      item.appendChild(txt);
-      // priority dot if multiple tasks
-      if (block.tasks.length > 1 && task.priority && task.priority !== 'none') {
-        const pd = document.createElement('span');
-        pd.style.cssText = `width:6px;height:6px;border-radius:50%;flex-shrink:0;`;
-        pd.style.background = task.priority === 'High' ? 'oklch(55% 0.12 25)' :
-                               task.priority === 'Medium' ? 'oklch(55% 0.10 70)' : 'oklch(55% 0.08 200)';
-        item.appendChild(pd);
+    // Distribute tasks into up to 3 columns
+    const maxCols = 3;
+    const totalTasks = block.tasks.length;
+    const colCount = Math.min(maxCols, Math.ceil(totalTasks / perCol));
+
+    // Wrapper: if more than 1 column needed, extend block to the right via absolute columns
+    const tasksWrapper = document.createElement('div');
+    tasksWrapper.className = 'block-tasks-wrapper';
+    tasksWrapper.style.cssText = 'position:relative; margin-top:4px;';
+
+    for (let c = 0; c < colCount; c++) {
+      const colTasks = block.tasks.slice(c * perCol, (c + 1) * perCol);
+      if (colTasks.length === 0) break;
+
+      const colEl = document.createElement('div');
+      colEl.className = 'block-tasks';
+      if (c > 0) {
+        // Position additional columns absolutely to the right of the block
+        colEl.style.cssText = `
+          position: absolute;
+          top: 0;
+          left: ${c * 160}px;
+          width: 152px;
+          background: var(--block-bg, #fff);
+          border: 1.5px solid var(--block-border, rgba(0,0,0,0.08));
+          border-radius: var(--radius-md);
+          padding: 4px 6px;
+          box-shadow: var(--shadow-md);
+          z-index: ${9 + c};
+          pointer-events: all;
+        `;
       }
-      item.addEventListener('click', e => e.stopPropagation());
-      tasksEl.appendChild(item);
-    });
 
-    if (block.tasks.length > maxVisible) {
-      const more = document.createElement('div');
-      more.style.cssText = 'font-size:0.67rem;color:var(--text-muted);margin-top:1px;';
-      more.textContent = `+${block.tasks.length - maxVisible} more`;
-      tasksEl.appendChild(more);
+      colTasks.forEach(task => {
+        const item = document.createElement('div');
+        item.className = 'block-task-item' + (task.completed ? ' completed' : '');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = task.completed;
+        cb.addEventListener('change', e => {
+          e.stopPropagation();
+          toggleTaskCompletion(block, task.id);
+        });
+        const txt = document.createElement('span');
+        txt.className = 'block-task-text';
+        txt.textContent = task.text;
+        item.appendChild(cb);
+        item.appendChild(txt);
+        // priority dot
+        if (task.priority && task.priority !== 'none') {
+          const pd = document.createElement('span');
+          pd.style.cssText = 'width:6px;height:6px;border-radius:50%;flex-shrink:0;';
+          pd.style.background = task.priority === 'High' ? 'oklch(55% 0.12 25)' :
+                                 task.priority === 'Medium' ? 'oklch(55% 0.10 70)' : 'oklch(55% 0.08 200)';
+          item.appendChild(pd);
+        }
+        item.addEventListener('click', e => e.stopPropagation());
+        colEl.appendChild(item);
+      });
+
+      tasksWrapper.appendChild(colEl);
     }
 
-    // Progress bar if multiple tasks
+    // Progress bar if multiple tasks (only in first column area)
     if (block.tasks.length > 1) {
       const done = block.tasks.filter(t=>t.completed).length;
       const pbar = document.createElement('div');
@@ -2042,11 +2060,11 @@ function renderBlock(block, layer) {
       const ptxt = document.createElement('div');
       ptxt.className = 'block-progress-text';
       ptxt.textContent = `${done}/${block.tasks.length} complete`;
-      tasksEl.appendChild(pbar);
-      tasksEl.appendChild(ptxt);
+      tasksWrapper.appendChild(pbar);
+      tasksWrapper.appendChild(ptxt);
     }
 
-    content.appendChild(tasksEl);
+    content.appendChild(tasksWrapper);
   }
 
   el.appendChild(content);
