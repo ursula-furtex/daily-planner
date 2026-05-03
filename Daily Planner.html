@@ -2007,11 +2007,10 @@ function renderBlock(block, layer) {
           top: 0;
           left: ${c * 160}px;
           width: 152px;
-          background: var(--block-bg, #fff);
-          border: 1.5px solid var(--block-border, rgba(0,0,0,0.08));
-          border-radius: var(--radius-md);
-          padding: 4px 6px;
-          box-shadow: var(--shadow-md);
+          background: transparent;
+          border: none;
+          padding: 0;
+          box-shadow: none;
           z-index: ${9 + c};
           pointer-events: all;
         `;
