@@ -265,8 +265,6 @@ a { color: inherit; text-decoration: none; }
   flex-direction: column;
   gap: 2px;
   border: 1.5px solid transparent;
-  /* Allow block to show tasks even in short slots */
-  min-height: fit-content;
 }
 .time-block:hover {
   box-shadow: var(--shadow-md);
@@ -287,7 +285,23 @@ a { color: inherit; text-decoration: none; }
   width: 4px;
   border-radius: var(--radius-md) 0 0 var(--radius-md);
 }
-.block-content { margin-left: 8px; flex: 1; overflow: hidden; min-height: 0; }
+.block-content {
+  margin-left: 8px;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+  position: relative;
+}
+/* Fade-out at bottom when content is clipped */
+.block-content::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 12px;
+  background: linear-gradient(to bottom, transparent, var(--block-bg, rgba(255,255,255,0.01)));
+  pointer-events: none;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
 .block-title {
   font-size: 0.82rem;
   font-weight: 600;
@@ -364,8 +378,16 @@ a { color: inherit; text-decoration: none; }
   color: var(--text-muted);
   margin-top: 1px;
 }
-/* Resize handles */
-.resize-handle {
+/* 15-min sub-line within each 30-min row */
+.time-slot-row .quarter-line {
+  position: absolute;
+  left: 0; right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--border);
+  opacity: 0.5;
+  pointer-events: none;
+}
   position: absolute;
   left: 0;
   right: 0;
@@ -1329,11 +1351,11 @@ select.form-input { cursor: pointer; }
       <div class="form-row">
         <div class="form-group">
           <label for="editor-start">Start Time</label>
-          <input type="time" id="editor-start" class="form-input" step="900">
+          <input type="time" id="editor-start" class="form-input" step="900" list="time-list-15">
         </div>
         <div class="form-group">
           <label for="editor-end">End Time</label>
-          <input type="time" id="editor-end" class="form-input" step="900">
+          <input type="time" id="editor-end" class="form-input" step="900" list="time-list-15">
         </div>
       </div>
 
@@ -1478,9 +1500,9 @@ select.form-input { cursor: pointer; }
   <div class="qa-row">
     <label>Time</label>
     <div class="qa-time-range">
-      <input type="time" id="qa-start" class="qa-time" step="900">
+      <input type="time" id="qa-start" class="qa-time" step="900" list="time-list-15">
       <span>–</span>
-      <input type="time" id="qa-end" class="qa-time" step="900">
+      <input type="time" id="qa-end" class="qa-time" step="900" list="time-list-15">
     </div>
   </div>
   <div class="qa-row">
@@ -1501,6 +1523,9 @@ select.form-input { cursor: pointer; }
     </div>
   </div>
 </div>
+
+<!-- 15-min time datalist for time inputs -->
+<datalist id="time-list-15"></datalist>
 
 <!-- PWA INSTALL BANNER -->
 <div id="pwa-install-banner" class="hidden">
@@ -1779,7 +1804,8 @@ function getBlocksForDay(ds) {
 
 const DAY_START_MIN = 7*60+30;  // 7:30am
 const DAY_END_MIN   = 17*60;    // 5:00pm
-const SLOT_MIN      = 30;       // 30-min slots
+const SLOT_MIN      = 30;       // 30-min grid rows (visual)
+const SNAP_MIN      = 15;       // 15-min snap for drag/resize/create
 const TOTAL_SLOTS   = (DAY_END_MIN - DAY_START_MIN) / SLOT_MIN; // 19
 
 // Convert time string to pixel offset from top of grid
@@ -1790,11 +1816,11 @@ function timeToY(t) {
 }
 
 // Convert pixel offset to time string (snapped to 15min)
-function yToTime(y, snap15=false) {
+function yToTime(y) {
+  // Always snap to SNAP_MIN (15-min) increments
   const slotH = getSlotH();
-  const snapMin = snap15 ? 15 : SLOT_MIN;
   const totalMin = (y / slotH) * SLOT_MIN;
-  const snapped = Math.round(totalMin / snapMin) * snapMin;
+  const snapped = Math.round(totalMin / SNAP_MIN) * SNAP_MIN;
   const absMin = DAY_START_MIN + snapped;
   const clamped = Math.max(DAY_START_MIN, Math.min(DAY_END_MIN, absMin));
   return minToTime(clamped);
@@ -1844,6 +1870,11 @@ function renderTimeGrid() {
       if (e.target.closest('.resize-handle')) return;
       startGridSelect(e, timeStr);
     });
+
+    // 15-min sub-line
+    const qLine = document.createElement('div');
+    qLine.className = 'quarter-line';
+    row.appendChild(qLine);
 
     // Time label
     const label = document.createElement('div');
@@ -1899,7 +1930,7 @@ function renderBlock(block, layer) {
   el.className = 'time-block';
   el.dataset.id = block.id;
   el.style.top       = top + 'px';
-  el.style.minHeight = height + 'px';
+  el.style.height    = height + 'px';
   el.style.background = hexToRgba(color, 0.35);
   el.style.borderColor = hexToRgba(color, 0.6);
   el.style.zIndex = 5;
@@ -1956,7 +1987,12 @@ function renderBlock(block, layer) {
     const tasksEl = document.createElement('div');
     tasksEl.className = 'block-tasks';
 
-    const maxVisible = 5; // always show up to 5 tasks; block expands to fit
+    // Calculate how many tasks fit based on block height
+    // Each task row is ~18px; reserve ~32px for title+meta, ~16px for progress
+    const taskRowH = 18;
+    const reservedH = 36 + (block.tasks.length > 1 ? 20 : 0);
+    const availableH = height - reservedH;
+    const maxVisible = Math.max(1, Math.min(5, Math.floor(availableH / taskRowH)));
     const visibleTasks = block.tasks.slice(0, maxVisible);
 
     visibleTasks.forEach(task => {
@@ -2233,7 +2269,7 @@ function getWeekDates(mondayDs) {
 let editorState = null; // { block, date, isNew }
 
 function openNewBlockEditor(startTime, ds) {
-  const endMin = Math.min(timeToMin(startTime) + 30, DAY_END_MIN);
+  const endMin = Math.min(timeToMin(startTime) + SNAP_MIN, DAY_END_MIN);
   const block = {
     id: null,
     title: '',
@@ -2648,9 +2684,10 @@ function startGridSelect(e, slotTime) {
   // Create ghost element
   const ghost = document.createElement('div');
   ghost.className = 'drag-select-ghost';
-  const snapTop = Math.round(startY / slotH) * slotH;
+  const halfSlot = slotH / 2; // 15-min = half a 30-min slot
+  const snapTop = Math.round(startY / halfSlot) * halfSlot;
   ghost.style.top = snapTop + 'px';
-  ghost.style.height = slotH + 'px';
+  ghost.style.height = halfSlot + 'px';
   ghost.textContent = slotTime ? formatTime(slotTime) : '';
   layer.appendChild(ghost);
 
@@ -2666,16 +2703,17 @@ function startGridSelect(e, slotTime) {
   function onMove(ev) {
     if (!qaState) return;
     const curY = ev.clientY - layerRect.top;
-    const snapCur = Math.round(curY / slotH) * slotH;
+    const halfSlot = slotH / 2;
+    const snapCur = Math.round(curY / halfSlot) * halfSlot;
     if (Math.abs(snapCur - qaState.startY) > 4) qaState.moved = true;
 
     if (snapCur > qaState.startY) {
       ghost.style.top = qaState.startY + 'px';
-      ghost.style.height = Math.max(slotH, snapCur - qaState.startY) + 'px';
+      ghost.style.height = Math.max(halfSlot, snapCur - qaState.startY) + 'px';
       qaState.endTime = yToTime(snapCur);
     } else if (snapCur < qaState.startY) {
       ghost.style.top = snapCur + 'px';
-      ghost.style.height = Math.max(slotH, qaState.startY - snapCur) + 'px';
+      ghost.style.height = Math.max(halfSlot, qaState.startY - snapCur) + 'px';
       qaState.startTime = yToTime(snapCur);
       qaState.endTime = slotTime;
     }
@@ -2934,8 +2972,9 @@ function startDragBlock(e, block, el) {
     if (Math.abs(ev.clientY - startClientY) > 6) hasMoved = true;
     if (!hasMoved) return;
     const slotH = getSlotH();
+    const halfSlot = slotH / 2; // 15-min precision
     const rawY = ev.clientY - layerRect.top - offsetY;
-    const snapY = Math.round(rawY / slotH) * slotH;
+    const snapY = Math.round(rawY / halfSlot) * halfSlot;
     const clamped = Math.max(0, Math.min(snapY, (TOTAL_SLOTS * slotH) - (duration/SLOT_MIN*slotH)));
     el.style.top = clamped + 'px';
 
@@ -2999,27 +3038,26 @@ function startResizeBlock(e, block, el, handle) {
   function onMove(ev) {
     if (!resizeState) return;
     const slotH = getSlotH();
+    const halfSlot = slotH / 2; // 15-min precision
     const relY = ev.clientY - layerRect.top;
-    const snapped = Math.round(relY / slotH) * slotH;
+    const snapped = Math.round(relY / halfSlot) * halfSlot;
     const time = yToTime(snapped);
 
     if (handle === 'bottom') {
       const startMin = timeToMin(block.start);
-      const newEnd = Math.max(startMin + SLOT_MIN, timeToMin(time));
+      const newEnd = Math.max(startMin + SNAP_MIN, timeToMin(time));
       const clampedEnd = Math.min(newEnd, DAY_END_MIN);
       const topPx = ((startMin - DAY_START_MIN) / SLOT_MIN) * slotH;
       const ht = Math.max(getSlotH(), ((clampedEnd - startMin) / SLOT_MIN) * slotH - 3);
-      el.style.minHeight = ht + 'px';
       el.style.height = ht + 'px';
       resizeState._newEnd = minToTime(clampedEnd);
     } else {
       const endMin = timeToMin(block.end);
-      const newStart = Math.min(endMin - SLOT_MIN, timeToMin(time));
+      const newStart = Math.min(endMin - SNAP_MIN, timeToMin(time));
       const clampedStart = Math.max(DAY_START_MIN, newStart);
       const topPx = ((clampedStart - DAY_START_MIN) / SLOT_MIN) * slotH;
       el.style.top = topPx + 'px';
       const ht = Math.max(getSlotH(), ((endMin - clampedStart) / SLOT_MIN) * slotH - 3);
-      el.style.minHeight = ht + 'px';
       el.style.height = ht + 'px';
       resizeState._newStart = minToTime(clampedStart);
     }
@@ -3596,6 +3634,17 @@ if (window.matchMedia('(display-mode: standalone)').matches ||
 }
 
 // ── Initialise ────────────────────────────────────────────────
+
+// Populate 15-min time datalist (for time inputs)
+(function buildTimeList() {
+  const dl = document.getElementById('time-list-15');
+  for (let m = 0; m < 24 * 60; m += 15) {
+    const opt = document.createElement('option');
+    opt.value = minToTime(m);
+    dl.appendChild(opt);
+  }
+})();
+
 loadData();
 currentWeekStart = getWeekMonday(currentDate);
 setView('day');
