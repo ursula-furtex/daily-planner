@@ -379,6 +379,7 @@ a { color: inherit; text-decoration: none; }
   opacity: 0.5;
   pointer-events: none;
 }
+.resize-handle {
   position: absolute;
   left: 0;
   right: 0;
@@ -1833,11 +1834,11 @@ function renderDailyView() {
 
 function renderTimeGrid() {
   const grid = document.getElementById('time-grid');
-  // Remove old rows (keep blocks-layer)
-  const existing = grid.querySelectorAll('.time-slot-row');
-  existing.forEach(el=>el.remove());
-  const existingLabels = grid.querySelectorAll('.slot-time-label-wrapper');
-  existingLabels.forEach(el=>el.remove());
+  // Remove old rows AND end-row AND any stray label wrappers
+  // (previously the end-row was never removed, so each re-render piled
+  //  another 2.5px stripe at the top of the grid and pushed labels down
+  //  out of alignment with the absolutely-positioned blocks layer)
+  grid.querySelectorAll('.time-slot-row, .grid-end-row, .slot-time-label-wrapper').forEach(el=>el.remove());
 
   const slotH = getSlotH();
 
@@ -1876,8 +1877,9 @@ function renderTimeGrid() {
     grid.insertBefore(row, document.getElementById('blocks-layer'));
   }
 
-  // Add bottom border row
+  // Add bottom border row (tagged so it can be removed on next re-render)
   const endRow = document.createElement('div');
+  endRow.className = 'grid-end-row';
   endRow.style.cssText = `height:1px; border-top:1.5px solid var(--border-2); margin-left:60px;`;
   grid.insertBefore(endRow, document.getElementById('blocks-layer'));
 }
@@ -1891,7 +1893,44 @@ function renderBlocks(ds) {
   if (oldLine) oldLine.remove();
 
   const blocks = getBlocksForDay(ds);
-  blocks.forEach(block => renderBlock(block, layer));
+
+  // ── Lane layout for overlapping blocks ──
+  // Sort by start, then by length (longer first within same start)
+  const sorted = [...blocks].sort((a,b) => {
+    const sa = timeToMin(a.start), sb = timeToMin(b.start);
+    if (sa !== sb) return sa - sb;
+    return timeToMin(b.end) - timeToMin(a.end);
+  });
+
+  // Cluster: any blocks that transitively overlap each other share lane count
+  const laneInfo = new Map(); // block.id -> { lane, total }
+  let cluster = [];
+  let clusterEnd = -Infinity;
+  const flushCluster = () => {
+    if (!cluster.length) return;
+    // Greedy lane packing
+    const lanes = []; // each lane stores its current end time
+    cluster.forEach(b => {
+      const s = timeToMin(b.start), e = timeToMin(b.end);
+      let li = lanes.findIndex(le => le <= s);
+      if (li === -1) { li = lanes.length; lanes.push(e); }
+      else { lanes[li] = e; }
+      laneInfo.set(b.id, { lane: li, total: 0 });
+    });
+    const total = lanes.length;
+    cluster.forEach(b => { laneInfo.get(b.id).total = total; });
+    cluster = [];
+    clusterEnd = -Infinity;
+  };
+  sorted.forEach(b => {
+    const s = timeToMin(b.start), e = timeToMin(b.end);
+    if (cluster.length && s >= clusterEnd) flushCluster();
+    cluster.push(b);
+    clusterEnd = Math.max(clusterEnd, e);
+  });
+  flushCluster();
+
+  blocks.forEach(block => renderBlock(block, layer, laneInfo.get(block.id)));
 }
 
 function getCategoryById(id) {
@@ -1905,7 +1944,7 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-function renderBlock(block, layer) {
+function renderBlock(block, layer, laneInfo) {
   const startMin = timeToMin(block.start);
   const endMin   = timeToMin(block.end);
   if (startMin >= DAY_END_MIN || endMin <= DAY_START_MIN) return;
@@ -1922,6 +1961,15 @@ function renderBlock(block, layer) {
   el.dataset.id = block.id;
   el.style.top       = top + 'px';
   el.style.height    = height + 'px';
+
+  // Lane positioning for overlapping blocks — divide horizontal space
+  if (laneInfo && laneInfo.total > 1) {
+    const widthPct = 100 / laneInfo.total;
+    el.style.left  = `calc(${widthPct * laneInfo.lane}% + 3px)`;
+    el.style.width = `calc(${widthPct}% - 6px)`;
+    el.style.right = 'auto';
+  }
+
   el.style.background = hexToRgba(color, 0.35);
   el.style.borderColor = hexToRgba(color, 0.6);
   el.style.zIndex = 5;
@@ -2340,11 +2388,18 @@ function showRecurEditChoice(block) {
 }
 
 function populateEditor(block, isNew) {
+  // Always work against editorState.block — that's what the save handler
+  // reads from. (Previously this rendered tasks from the original block ref
+  // while editorState.block held a deep clone, so task adds/removes/edits
+  // were silently lost on save.)
+  const wb = editorState ? editorState.block : block;
+  if (!wb.tasks) wb.tasks = [];
+
   document.getElementById('editor-modal-title').textContent = isNew ? 'New Block' : 'Edit Block';
-  document.getElementById('editor-title').value = block.title || '';
-  document.getElementById('editor-start').value = block.start || '';
-  document.getElementById('editor-end').value = block.end || '';
-  document.getElementById('editor-notes').value = block.notes || '';
+  document.getElementById('editor-title').value = wb.title || '';
+  document.getElementById('editor-start').value = wb.start || '';
+  document.getElementById('editor-end').value = wb.end || '';
+  document.getElementById('editor-notes').value = wb.notes || '';
 
   // Categories
   const catSel = document.getElementById('editor-category');
@@ -2355,7 +2410,7 @@ function populateEditor(block, isNew) {
     opt.textContent = c.name;
     catSel.appendChild(opt);
   });
-  catSel.value = block.categoryId || appData.settings.categories[0]?.id;
+  catSel.value = wb.categoryId || appData.settings.categories[0]?.id;
 
   // Locations
   const locSel = document.getElementById('editor-location');
@@ -2366,25 +2421,25 @@ function populateEditor(block, isNew) {
     opt.textContent = l;
     locSel.appendChild(opt);
   });
-  locSel.value = block.location || 'At Desk';
+  locSel.value = wb.location || 'At Desk';
   document.getElementById('custom-location-group').style.display =
-    block.location === 'Custom' ? '' : 'none';
-  document.getElementById('editor-custom-location').value = block.customLocation || '';
+    wb.location === 'Custom' ? '' : 'none';
+  document.getElementById('editor-custom-location').value = wb.customLocation || '';
 
   locSel.onchange = () => {
     document.getElementById('custom-location-group').style.display =
       locSel.value === 'Custom' ? '' : 'none';
   };
 
-  // Tasks
-  renderEditorTasks(block.tasks || []);
+  // Tasks — render against the working copy so edits actually persist
+  renderEditorTasks(wb.tasks);
 
   // Recurrence
-  const recurType = block.recurrenceId && appData.recurrences[block.recurrenceId]
-    ? appData.recurrences[block.recurrenceId].frequency
+  const recurType = wb.recurrenceId && appData.recurrences[wb.recurrenceId]
+    ? appData.recurrences[wb.recurrenceId].frequency
     : 'none';
   document.getElementById('editor-recur-type').value = recurType;
-  toggleRecurFields(recurType, block.recurrenceId);
+  toggleRecurFields(recurType, wb.recurrenceId);
 
   // Delete button
   document.getElementById('editor-delete-btn').classList.toggle('hidden', isNew);
