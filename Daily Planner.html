@@ -491,7 +491,7 @@ a { color: inherit; text-decoration: none; }
 }
 #daily-notes:focus { border-color: var(--accent); background: var(--accent-light); }
 
-/* Category Legend */
+/* Category Legend / Time Breakdown */
 .cat-legend-item {
   display: flex;
   align-items: center;
@@ -505,6 +505,89 @@ a { color: inherit; text-decoration: none; }
   height: 10px;
   border-radius: 50%;
   flex-shrink: 0;
+}
+.breakdown-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--border);
+}
+.breakdown-total-value {
+  font-family: var(--font-serif);
+  font-size: 1.05rem;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+.breakdown-total-label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.breakdown-stacked-bar {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: var(--bg-2);
+  margin-bottom: 12px;
+}
+.breakdown-stacked-seg {
+  height: 100%;
+  transition: width 0.3s;
+}
+.breakdown-item {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.breakdown-item.zero { opacity: 0.5; }
+.breakdown-item-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.breakdown-item-pct {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.78rem;
+}
+.breakdown-item-bar {
+  grid-column: 2 / 4;
+  height: 4px;
+  background: var(--bg-2);
+  border-radius: 99px;
+  overflow: hidden;
+  margin-top: -2px;
+}
+.breakdown-item-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width 0.3s;
+}
+.breakdown-item-time {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  grid-column: 2;
+  margin-top: -1px;
+}
+.breakdown-empty {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 4px 0;
 }
 
 /* ============================================================
@@ -1306,10 +1389,10 @@ select.form-input { cursor: pointer; }
         <textarea id="daily-notes" placeholder="Add notes for today…" rows="6"></textarea>
       </div>
 
-      <!-- Category legend -->
+      <!-- Time Breakdown by Category -->
       <div class="sidebar-section">
-        <div class="sidebar-section-title">Categories</div>
-        <div id="cat-legend"></div>
+        <div class="sidebar-section-title">Time Breakdown</div>
+        <div id="cat-breakdown"></div>
       </div>
     </aside>
   </div>
@@ -2222,7 +2305,7 @@ function materialiseVirtualBlock(vBlock, ds) {
 function renderSidebar() {
   renderProgress();
   renderTop3();
-  renderCatLegend();
+  renderCatBreakdown();
   // Notes
   const day = getDayData(currentDate);
   const notesEl = document.getElementById('daily-notes');
@@ -2281,19 +2364,149 @@ function renderTop3() {
   });
 }
 
-function renderCatLegend() {
-  const container = document.getElementById('cat-legend');
+function formatDuration(min) {
+  if (min <= 0) return '0m';
+  const h = Math.floor(min/60);
+  const m = min % 60;
+  if (h && m) return `${h}h ${m}m`;
+  if (h) return `${h}h`;
+  return `${m}m`;
+}
+
+function renderCatBreakdown() {
+  const container = document.getElementById('cat-breakdown');
   container.innerHTML = '';
-  appData.settings.categories.forEach(cat => {
+
+  const blocks = getBlocksForDay(currentDate);
+
+  // Sum minutes per category (clamped to the visible day window so out-of-range
+  // blocks don't skew the totals)
+  const byCat = {};
+  let totalMin = 0;
+  blocks.forEach(b => {
+    const s = Math.max(timeToMin(b.start), DAY_START_MIN);
+    const e = Math.min(timeToMin(b.end), DAY_END_MIN);
+    const dur = Math.max(0, e - s);
+    if (!dur) return;
+    byCat[b.categoryId] = (byCat[b.categoryId] || 0) + dur;
+    totalMin += dur;
+  });
+
+  // Total + stacked bar
+  const totalRow = document.createElement('div');
+  totalRow.className = 'breakdown-total';
+  const totalVal = document.createElement('span');
+  totalVal.className = 'breakdown-total-value';
+  totalVal.textContent = totalMin > 0 ? formatDuration(totalMin) : '—';
+  const totalLbl = document.createElement('span');
+  totalLbl.className = 'breakdown-total-label';
+  totalLbl.textContent = 'scheduled';
+  totalRow.appendChild(totalVal);
+  totalRow.appendChild(totalLbl);
+  container.appendChild(totalRow);
+
+  if (totalMin === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'breakdown-empty';
+    empty.textContent = 'No blocks scheduled yet today.';
+    container.appendChild(empty);
+    // Still show the category list (all zero) so users see the legend
+    appData.settings.categories.forEach(cat => {
+      const item = document.createElement('div');
+      item.className = 'breakdown-item zero';
+      const dot = document.createElement('div');
+      dot.className = 'cat-dot';
+      dot.style.background = cat.color;
+      const name = document.createElement('span');
+      name.className = 'breakdown-item-name';
+      name.textContent = cat.name;
+      const pct = document.createElement('span');
+      pct.className = 'breakdown-item-pct';
+      pct.textContent = '0%';
+      item.appendChild(dot);
+      item.appendChild(name);
+      item.appendChild(pct);
+      container.appendChild(item);
+    });
+    return;
+  }
+
+  // Build sorted list of categories actually used (desc by time),
+  // then append unused ones at the bottom faded out
+  const usedIds = Object.keys(byCat);
+  const used = usedIds
+    .map(id => ({ cat: getCategoryById(id), id, min: byCat[id] }))
+    .filter(x => x.cat && x.cat.name)
+    .sort((a, b) => b.min - a.min);
+
+  // Stacked summary bar
+  const stacked = document.createElement('div');
+  stacked.className = 'breakdown-stacked-bar';
+  used.forEach(({ cat, min }) => {
+    const seg = document.createElement('div');
+    seg.className = 'breakdown-stacked-seg';
+    seg.style.width = (min / totalMin * 100) + '%';
+    seg.style.background = cat.color;
+    seg.title = `${cat.name} — ${formatDuration(min)} (${Math.round(min/totalMin*100)}%)`;
+    stacked.appendChild(seg);
+  });
+  container.appendChild(stacked);
+
+  // Per-category rows
+  used.forEach(({ cat, min }) => {
+    const pctNum = min / totalMin * 100;
     const item = document.createElement('div');
-    item.className = 'cat-legend-item';
+    item.className = 'breakdown-item';
+
+    const dot = document.createElement('div');
+    dot.className = 'cat-dot';
+    dot.style.background = cat.color;
+
+    const name = document.createElement('span');
+    name.className = 'breakdown-item-name';
+    name.textContent = cat.name;
+
+    const pct = document.createElement('span');
+    pct.className = 'breakdown-item-pct';
+    pct.textContent = Math.round(pctNum) + '%';
+
+    const time = document.createElement('span');
+    time.className = 'breakdown-item-time';
+    time.textContent = formatDuration(min);
+
+    const bar = document.createElement('div');
+    bar.className = 'breakdown-item-bar';
+    const fill = document.createElement('div');
+    fill.className = 'breakdown-item-bar-fill';
+    fill.style.width = pctNum + '%';
+    fill.style.background = cat.color;
+    bar.appendChild(fill);
+
+    item.appendChild(dot);
+    item.appendChild(name);
+    item.appendChild(pct);
+    item.appendChild(time);
+    item.appendChild(bar);
+    container.appendChild(item);
+  });
+
+  // Unused categories (faded, no bar)
+  const unused = appData.settings.categories.filter(c => !byCat[c.id]);
+  unused.forEach(cat => {
+    const item = document.createElement('div');
+    item.className = 'breakdown-item zero';
     const dot = document.createElement('div');
     dot.className = 'cat-dot';
     dot.style.background = cat.color;
     const name = document.createElement('span');
+    name.className = 'breakdown-item-name';
     name.textContent = cat.name;
+    const pct = document.createElement('span');
+    pct.className = 'breakdown-item-pct';
+    pct.textContent = '0%';
     item.appendChild(dot);
     item.appendChild(name);
+    item.appendChild(pct);
     container.appendChild(item);
   });
 }
@@ -2394,6 +2607,8 @@ function populateEditor(block, isNew) {
   // were silently lost on save.)
   const wb = editorState ? editorState.block : block;
   if (!wb.tasks) wb.tasks = [];
+  // Ensure every task has a stable id (legacy data may not have one)
+  wb.tasks.forEach(t => { if (!t.id) t.id = uid(); });
 
   document.getElementById('editor-modal-title').textContent = isNew ? 'New Block' : 'Edit Block';
   document.getElementById('editor-title').value = wb.title || '';
